@@ -1,0 +1,68 @@
+{
+  "executive_summary": "The company's codebase is heavily dependent on a single developer, DEV_01, who has made 51.2% of all commits in the last 90 days. Losing this developer would pose a significant risk to the company's ability to maintain and evolve its product. The company's bus factor is 1, indicating that the loss of this key developer could have a major impact on the business.",
+  "bus_factor_score": 8,
+  "critical_developers": [
+    {
+      "label": "DEV_01",
+      "commit_share_pct": 51.2,
+      "areas_owned": [
+        "database infrastructure",
+        "authentication",
+        "payments",
+        "security",
+        "infrastructure"
+      ],
+      "risk_level": "CRITICAL",
+      "finding": "DEV_01 is responsible for a large proportion of critical system components, including database infrastructure, authentication, and payments, making their loss a significant risk to the company's operations."
+    }
+  ],
+  "red_flags": [
+    "Undocumented configurations and manual interventions required for production systems",
+    "Lack of runbooks and documentation for critical systems",
+    "Single points of failure, such as the reliance on a single developer for key systems"
+  ],
+  "recommended_actions": [
+    "Develop a comprehensive documentation set for all systems and configurations",
+    "Implement a knowledge sharing program to reduce dependence on individual developers",
+    "Identify and mitigate single points of failure in critical systems",
+    "Develop a plan for emergency situations, such as the loss of a key developer"
+  ],
+  "acquisition_impact": "If DEV_01 were to leave the company on day 1 post-close, it would likely have a significant impact on the company's ability to maintain and evolve its product, potentially leading to delays, outages, or security vulnerabilities. The acquirer should prioritize knowledge transfer, documentation, and developer onboarding to mitigate this risk.",
+  "_knowledge_graph": {
+    "total_commits": 123,
+    "author_breakdown": {
+      "DEV_01": {
+        "commits": 63,
+        "pct": 51.2
+      },
+      "DEV_02": {
+        "commits": 13,
+        "pct": 10.6
+      },
+      "DEV_03": {
+        "commits": 12,
+        "pct": 9.8
+      },
+      "DEV_04": {
+        "commits": 12,
+        "pct": 9.8
+      },
+      "DEV_05": {
+        "commits": 12,
+        "pct": 9.8
+      },
+      "DEV_06": {
+        "commits": 11,
+        "pct": 8.9
+      }
+    },
+    "bus_factor_risks": {
+      "DEV_01": {
+        "commits": 63,
+        "pct": 51.2,
+        "risk": "CRITICAL"
+      }
+    },
+    "bus_factor_number": 1
+  }
+}

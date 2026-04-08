@@ -12,6 +12,15 @@ export type AnalyticsPayload = {
   total_commits: number
   unique_contributors: number
   distribution: AnalyticsDistribution[]
+  key_person_risk_score?: number | null
+  concentration_hhi?: number | null
+  effective_contributors?: number | null
+  contributors_50pct?: number | null
+  contributors_90pct?: number | null
+  concentration_index?: number | null
+  risk_level?: string | null
+  top_share?: number | null
+  repository_bus_factor_breadth?: number | null
 }
 
 type Props = {
@@ -62,10 +71,13 @@ export default function QuantitativeRiskDashboard({ busFactorScore }: Props) {
   const topShare = data?.distribution?.[0]?.percentage ?? 0
   const isCritical = topShare >= 50
 
-  const scoreLabel = useMemo(() => {
-    if (busFactorScore == null) return '—'
-    return String(busFactorScore)
-  }, [busFactorScore])
+  const displayRiskScore = useMemo(() => {
+    if (data && data.total_commits > 0 && data.key_person_risk_score != null) {
+      return data.key_person_risk_score
+    }
+    if (busFactorScore != null) return busFactorScore
+    return null
+  }, [data, busFactorScore])
 
   return (
     <div className="glass-panel flex flex-col gap-4 p-4">
@@ -87,14 +99,24 @@ export default function QuantitativeRiskDashboard({ busFactorScore }: Props) {
             >
               <div className="flex items-center gap-2 text-neutral-500">
                 <Activity className="h-4 w-4 text-violet-400" />
-                <span className="font-mono text-[10px] uppercase tracking-wide">Bus factor (AI)</span>
+                <span className="font-mono text-[10px] uppercase tracking-wide">
+                  Consolidated risk (1–10)
+                </span>
               </div>
               <p className="mt-1 font-mono text-2xl font-bold text-white">
-                {scoreLabel}
-                {busFactorScore != null ? (
+                {displayRiskScore != null ? String(displayRiskScore) : '—'}
+                {displayRiskScore != null ? (
                   <span className="text-sm font-normal text-neutral-500"> /10</span>
                 ) : null}
               </p>
+              {data.effective_contributors != null && data.concentration_hhi != null ? (
+                <p className="mt-1 font-mono text-[10px] leading-snug text-neutral-500">
+                  1/HHI ≈ {data.effective_contributors} · HHI {data.concentration_hhi}
+                  {data.contributors_90pct != null
+                    ? ` · Bus factor breadth (90%): ${data.contributors_90pct} (higher is safer)`
+                    : ''}
+                </p>
+              ) : null}
             </motion.div>
             <motion.div
               initial={{ opacity: 0, y: 6 }}

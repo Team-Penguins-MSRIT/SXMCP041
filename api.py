@@ -27,6 +27,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
+_BFD_SRC = BASE_DIR / "bus-factor-detector" / "src"
+if _BFD_SRC.is_dir():
+    _p = str(_BFD_SRC.resolve())
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+from bus_factor_metrics import concentration_from_counts
+
 VENV_PYTHON = BASE_DIR / "venv" / "Scripts" / "python.exe"
 if not VENV_PYTHON.exists():
     VENV_PYTHON = Path(sys.executable)
@@ -227,16 +234,17 @@ def build_commit_author_file_graph(
 
 
 def _parse_at_risk_from_log(clean_log: str) -> str | None:
-    m = re.search(r"AT_RISK_PERSON:\s*(\S+)", clean_log)
-    if m:
-        return m.group(1).strip()
+    # Last wins: orchestrator may print LLM lines first, then file-derived metrics.
+    matches = re.findall(r"AT_RISK_PERSON:\s*(\S+)", clean_log)
+    if matches:
+        return matches[-1].strip()
     return None
 
 
 def _parse_bus_factor_score_from_log(clean_log: str) -> int | None:
-    m = re.search(r"BUS_FACTOR_SCORE:\s*(\d+)", clean_log, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
+    matches = re.findall(r"BUS_FACTOR_SCORE:\s*(\d+)", clean_log, re.IGNORECASE)
+    if matches:
+        return int(matches[-1])
     return None
 
 
@@ -248,11 +256,21 @@ def build_commit_analytics(commit_text: str) -> dict[str, Any]:
             "total_commits": 0,
             "unique_contributors": 0,
             "distribution": [],
+            "key_person_risk_score": None,
+            "concentration_hhi": None,
+            "effective_contributors": None,
+            "contributors_50pct": None,
+            "contributors_90pct": None,
+            "top_share": None,
+            "concentration_index": None,
+            "risk_level": None,
+            "repository_bus_factor_breadth": None,
         }
     total = len(rows)
     counts: Counter[str] = Counter()
     for author, _ in rows:
         counts[author] += 1
+    metrics = concentration_from_counts(dict(counts))
     distribution: list[dict[str, Any]] = []
     for author, count in counts.most_common():
         pct = round(100.0 * count / total, 2)
@@ -260,8 +278,17 @@ def build_commit_analytics(commit_text: str) -> dict[str, Any]:
     distribution.sort(key=lambda x: -x["percentage"])
     return {
         "total_commits": total,
-        "unique_contributors": len(counts),
+        "unique_contributors": metrics["contributor_count"],
         "distribution": distribution,
+        "key_person_risk_score": metrics["key_person_risk_score"],
+        "concentration_hhi": metrics["hhi"],
+        "effective_contributors": metrics["effective_contributors"],
+        "contributors_50pct": metrics["contributors_50pct"],
+        "contributors_90pct": metrics["contributors_90pct"],
+        "top_share": metrics["top_share"],
+        "concentration_index": metrics["concentration_index"],
+        "risk_level": metrics["risk_level"],
+        "repository_bus_factor_breadth": metrics["repository_bus_factor_breadth"],
     }
 
 
@@ -275,10 +302,12 @@ def _extract_pdf_filename(clean_log: str) -> str | None:
 
 
 def _intro_message() -> str:
+    org = os.getenv("TARGET_ORG_NAME", "").strip()
+    subject = f"{org}'s repository" if org else "the analyzed repository"
     return (
         "SOLARIS X: ANALYSIS COMPLETE\n"
         "----------------------------------------\n"
-        "The Technical Due Diligence report regarding AcquiCo's repository resilience "
+        f"The Technical Due Diligence report regarding {subject} resilience "
         "and key-person risk has been generated.\n\n"
         "Please review the attached confidential PDF document."
     )
@@ -439,7 +468,14 @@ async def _stream_main_py():
             DATA_MICRO.read_text(encoding="utf-8", errors="replace") if DATA_MICRO.exists() else ""
         )
         graph = build_commit_author_file_graph(commit_text, highlight_person=at_risk)
-        bus_factor_score = _parse_bus_factor_score_from_log(clean_full)
+        rows_cf = _parse_commit_lines(commit_text)
+        if rows_cf:
+            cmc: Counter[str] = Counter()
+            for a, _ in rows_cf:
+                cmc[a] += 1
+            bus_factor_score = concentration_from_counts(dict(cmc))["key_person_risk_score"]
+        else:
+            bus_factor_score = _parse_bus_factor_score_from_log(clean_full)
 
         _session["pdf_filename"] = pdf_filename
         _session["graph"] = graph

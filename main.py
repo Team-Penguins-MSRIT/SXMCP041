@@ -182,83 +182,297 @@ def parse_bus_factor_result(result_text: str) -> dict:
         parsed[key.strip().upper()] = value.strip()
     return parsed
 
-def safe_pdf_text(text: str) -> str:
-    if not text: return ""
-    return str(text).encode('latin-1', 'ignore').decode('latin-1').replace("*", "")
 
-def generate_pdf_report(parsed: dict, macro_text: str, output_path: str):
-    """Generates a highly structured, professional M&A technical PDF."""
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.set_text_color(30, 30, 30)
-    pdf.cell(0, 10, "TECHNICAL DUE DILIGENCE", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="L")
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, "REPOSITORY RESILIENCE & KEY-PERSON RISK", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="L")
-    
-    pdf.set_draw_color(200, 200, 200)
-    pdf.set_line_width(0.5)
-    pdf.line(10, pdf.get_y() + 2, 200, pdf.get_y() + 2)
-    pdf.ln(8)
-    
-    pdf.set_fill_color(245, 245, 245)
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.set_text_color(0, 0, 0)
-    
-    pdf.cell(50, 8, " Target Organization:", border=1, fill=True)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(140, 8, " AcquiCo Inc.", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(50, 8, " Primary At-Risk Node:", border=1, fill=True)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(140, 8, f" {safe_pdf_text(parsed.get('AT_RISK_PERSON', 'UNKNOWN'))}", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(50, 8, " Systemic Risk Level:", border=1, fill=True)
-    pdf.set_font("Helvetica", "B", 10)
-    
-    risk_level = safe_pdf_text(parsed.get("RISK_LEVEL", "UNKNOWN")).upper()
-    if "HIGH" in risk_level:
-        pdf.set_text_color(200, 0, 0)
-    elif "MEDIUM" in risk_level:
-        pdf.set_text_color(200, 120, 0)
+def _build_commit_graph_for_pdf(raw_log: str) -> dict:
+    """Commit distribution + bus-factor signals from uploaded log (no Groq import)."""
+    _src = BASE_DIR / "bus-factor-detector" / "src"
+    if str(_src.resolve()) not in sys.path:
+        sys.path.insert(0, str(_src.resolve()))
+    from bus_factor_metrics import concentration_from_counts
+    from pii_proxy import scrub_commit_log
+
+    _, author_map = scrub_commit_log(raw_log)
+    total = sum(author_map.values())
+    if total == 0:
+        return {}
+
+    metrics = concentration_from_counts(author_map)
+
+    ranked = sorted(author_map.items(), key=lambda x: x[1], reverse=True)
+    risks = {}
+    for author, count in ranked:
+        pct = round(count / total * 100, 1)
+        if pct >= 30:
+            risks[author] = {
+                "commits": count,
+                "pct": pct,
+                "risk": "CRITICAL" if pct >= 50 else "HIGH",
+            }
+
+    return {
+        "total_commits": total,
+        "author_breakdown": {
+            a: {"commits": c, "pct": round(c / total * 100, 1)} for a, c in ranked
+        },
+        "bus_factor_risks": risks,
+        "bus_factor_number": sum(1 for _a, d in risks.items() if d["pct"] >= 30),
+        "metrics": metrics,
+    }
+
+
+def pdf_fields_from_graph(graph: dict) -> dict:
+    """Structured PDF fields from a pre-built commit graph (same math as analytics)."""
+    total = graph.get("total_commits") or 0
+    if total == 0:
+        return {
+            "RISK_LEVEL": "UNKNOWN",
+            "KEY_FINDING": "No parseable commits in the uploaded log.",
+            "AT_RISK_PERSON": "UNKNOWN",
+            "RECOMMENDED_ACTION": "Provide a commit log with lines: DATE AUTHOR MESSAGE.",
+            "BUS_FACTOR_SCORE": "0",
+        }
+
+    breakdown = graph["author_breakdown"]
+    ranked = sorted(breakdown.items(), key=lambda x: x[1]["commits"], reverse=True)
+    top_a, top_d = ranked[0]
+    pct = top_d["pct"]
+    n_authors = len(breakdown)
+    m = graph.get("metrics") or {}
+
+    risk = m.get("risk_level", "UNKNOWN")
+    score = str(m.get("key_person_risk_score", 0))
+    n_eff = m.get("effective_contributors", 0)
+    k90 = m.get("contributors_90pct", n_authors)
+
+    finding = (
+        f"{top_a} leads with {top_d['commits']} of {total} commits ({pct}pct). "
+        f"{n_authors} distinct contributor(s). Bus factor breadth (90 pct rule): {k90} — "
+        f"fewer people covering most commits implies higher key-person risk. Effective contributors (1/HHI): ~{n_eff}."
+    )
+    if pct >= 50:
+        action = (
+            "Immediate cross-training and documentation sprint; retain-risk review for the lead contributor."
+        )
+    elif pct >= 30:
+        action = (
+            "Distribute ownership of critical paths; assign backup owners and pair on high-churn areas."
+        )
     else:
-        pdf.set_text_color(0, 150, 0)
-        
-    pdf.cell(140, 8, f" {risk_level} (Bus Factor Score: {safe_pdf_text(parsed.get('BUS_FACTOR_SCORE', 'N/A'))}/10)", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(10)
-    
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.set_text_color(40, 40, 40)
-    pdf.cell(0, 8, "1. CRITICAL VULNERABILITY FINDING", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(60, 60, 60)
-    pdf.multi_cell(0, 6, safe_pdf_text(parsed.get("KEY_FINDING", "No key finding reported.")))
-    pdf.ln(6)
-    
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.set_text_color(40, 40, 40)
-    pdf.cell(0, 8, "2. RECOMMENDED MITIGATION STRATEGY", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(60, 60, 60)
-    pdf.multi_cell(0, 6, safe_pdf_text(parsed.get("RECOMMENDED_ACTION", "No action reported.")))
-    pdf.ln(6)
-    
-    if macro_text:
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.set_text_color(40, 40, 40)
-        pdf.cell(0, 8, "3. MACRO REPOSITORY CONTEXT", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.set_text_color(60, 60, 60)
-        pdf.multi_cell(0, 6, safe_pdf_text(macro_text))
-        pdf.ln(6)
+        action = "Maintain pairing and reviews; monitor concentration if the team changes."
 
-    pdf.set_y(-25)
+    return {
+        "RISK_LEVEL": risk,
+        "KEY_FINDING": finding,
+        "AT_RISK_PERSON": top_a,
+        "RECOMMENDED_ACTION": action,
+        "BUS_FACTOR_SCORE": score,
+    }
+
+
+def pdf_fields_from_commit_log(raw_log: str) -> dict:
+    """Build graph from raw log, then derive PDF fields."""
+    return pdf_fields_from_graph(_build_commit_graph_for_pdf(raw_log))
+
+
+def macro_context_from_uploaded_log(raw_log: str) -> str:
+    """Section 3 body: quantitative context from the same log as the PDF (not stale cache)."""
+    graph = _build_commit_graph_for_pdf(raw_log)
+    total = graph.get("total_commits") or 0
+    if total == 0:
+        return ""
+
+    m = graph.get("metrics") or {}
+    lines = [
+        f"Scope: uploaded commit log ({total} commits, {len(graph['author_breakdown'])} contributors).",
+    ]
+    if m.get("total_commits"):
+        lines.append(
+            f"Summary: HHI={m['hhi']}, effective contributors (1/HHI)={m['effective_contributors']}, "
+            f"consolidated risk score={m['key_person_risk_score']}/10 (10 worst), "
+            f"bus factor breadth (90 pct)={m['contributors_90pct']} (higher breadth is safer)."
+        )
+    lines.append("Commit distribution:")
+    for author, d in sorted(
+        graph["author_breakdown"].items(), key=lambda x: x[1]["commits"], reverse=True
+    )[:15]:
+        lines.append(f"  {author}: {d['commits']} commits ({d['pct']}%)")
+    risks = graph.get("bus_factor_risks") or {}
+    if risks:
+        parts = [f"{a} ({risks[a]['pct']}%)" for a in risks]
+        lines.append(f"Contributors at or above ~30% share: {', '.join(parts)}")
+    return "\n".join(lines)
+
+
+def safe_pdf_text(text: str) -> str:
+    if not text:
+        return ""
+    t = str(text).replace("%", " pct")
+    return t.encode("latin-1", "ignore").decode("latin-1").replace("*", "")
+
+
+def _pdf_methodology_text(metrics: dict) -> str:
+    if not metrics or not metrics.get("total_commits"):
+        return ""
+    return (
+        "Methodology (commit-log basis): Each parseable line is one commit. Authors are anonymized for PII. "
+        "HHI is the sum of squared commit-share fractions (higher = more concentrated). "
+        "Effective contributors = 1 / HHI. Bus factor breadth (90 pct row) is the smallest k such that the k busiest "
+        "authors account for at least 90 pct of commits — higher k means work is spread across more people (lower "
+        "key-person risk). The consolidated risk score (1 to 10, 10 worst) is the rounded maximum of (a) breadth-based "
+        "risk from k versus team size and (b) concentration from normalized HHI, so low breadth or high concentration "
+        "both raise the score. Systemic risk labels combine breadth, 50 pct coverage, and top-share rules."
+    )
+
+
+def generate_pdf_report(
+    parsed: dict,
+    macro_text: str,
+    output_path: str,
+    *,
+    org_display: str = "Not specified",
+    metrics: dict | None = None,
+):
+    """Professional M&A-style PDF with header band, grid table, and clear risk semantics."""
+    pdf = FPDF()
+    page_w = 190
+    left = 10
+    label_w = 74
+    val_w = page_w - label_w
+    pdf.set_margins(left, 16, left)
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=14)
+
+    # Header band
+    pdf.set_fill_color(28, 38, 74)
+    pdf.rect(left, 11, page_w, 28, "F")
+    pdf.set_xy(left + 5, 15)
+    pdf.set_font("Helvetica", "B", 17)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(page_w - 10, 10, safe_pdf_text("TECHNICAL DUE DILIGENCE"))
+    pdf.set_xy(left + 5, 24)
+    pdf.set_font("Helvetica", "", 10.5)
+    pdf.set_text_color(205, 214, 240)
+    pdf.cell(page_w - 10, 7, safe_pdf_text("REPOSITORY RESILIENCE & KEY-PERSON RISK"))
+    pdf.set_text_color(33, 37, 41)
+    pdf.set_draw_color(190, 198, 210)
+    pdf.set_line_width(0.25)
+    pdf.set_y(44)
+
+    def zebra_row(label: str, value: str, idx: int) -> None:
+        alt = idx % 2 == 0
+        if alt:
+            pdf.set_fill_color(248, 249, 252)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(55, 65, 85)
+        pdf.cell(label_w, 7.5, f"  {safe_pdf_text(label)}", border=1, fill=True)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(30, 34, 42)
+        pdf.cell(val_w, 7.5, f"  {safe_pdf_text(value)}", border=1, fill=not alt, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    ri = 0
+    zebra_row("Target organization", org_display, ri)
+    ri += 1
+    zebra_row("Primary at-risk node", str(parsed.get("AT_RISK_PERSON", "UNKNOWN")), ri)
+    ri += 1
+
+    rl_raw = str(parsed.get("RISK_LEVEL", "UNKNOWN")).upper()
+    risk_level = safe_pdf_text(rl_raw)
+    score = safe_pdf_text(str(parsed.get("BUS_FACTOR_SCORE", "N/A")))
+    m = metrics or {}
+    k90 = int(m.get("contributors_90pct") or 0)
+    k50 = int(m.get("contributors_50pct") or 0)
+
+    pdf.set_fill_color(255, 246, 237)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_text_color(55, 65, 85)
+    pdf.cell(label_w, 8, f"  {safe_pdf_text('Systemic risk level')}", border=1, fill=True)
+    if "CRITICAL" in rl_raw:
+        pdf.set_text_color(160, 28, 28)
+    elif "HIGH" in rl_raw:
+        pdf.set_text_color(185, 50, 35)
+    elif "MEDIUM" in rl_raw:
+        pdf.set_text_color(175, 100, 25)
+    else:
+        pdf.set_text_color(22, 115, 70)
+    pdf.set_font("Helvetica", "B", 9)
+    sys_val = f"{risk_level}  |  Score {score}/10 (10 = worst)  |  Bus factor breadth {k90} (90 pct)"
+    pdf.cell(val_w, 8, f"  {safe_pdf_text(sys_val)}", border=1, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_text_color(75, 80, 90)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.multi_cell(
+        page_w,
+        4,
+        safe_pdf_text(
+            "Lower bus factor breadth means fewer contributors cover most commits, so key-person risk rises. "
+            "Higher breadth (larger k for the 90 pct row) means work is more distributed — generally safer."
+        ),
+        border="LR",
+        new_x=XPos.LMARGIN,
+        new_y=YPos.NEXT,
+    )
+    pdf.cell(page_w, 0, "", border="B", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(3)
+
+    if m.get("total_commits"):
+        qrows = [
+            ("Total commits in scope", str(int(m["total_commits"]))),
+            ("Active contributors", str(int(m["contributor_count"]))),
+            ("Commit HHI (concentration)", f"{float(m['hhi']):.4f}"),
+            ("Effective contributors (1 / HHI)", str(m["effective_contributors"])),
+            ("Top contributor share (fraction)", f"{float(m.get('top_share') or 0):.4f}"),
+            ("Contributors for first 50 pct of commits", str(int(k50))),
+            ("Contributors for first 90 pct of commits", str(int(k90))),
+            ("Concentration index (0 to 1)", f"{float(m['concentration_index']):.4f}"),
+        ]
+        for lbl, val in qrows:
+            zebra_row(lbl, val, ri)
+            ri += 1
+
+    pdf.ln(8)
+
+    def section_title(num_title: str) -> None:
+        pdf.set_x(left)
+        pdf.set_fill_color(232, 236, 248)
+        pdf.set_draw_color(180, 190, 210)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_text_color(28, 38, 74)
+        pdf.cell(page_w, 8, f"  {safe_pdf_text(num_title)}", border=1, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(2)
+
+    section_title("1. CRITICAL VULNERABILITY FINDING")
+    pdf.set_x(left)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(52, 56, 64)
+    pdf.multi_cell(page_w, 5.5, safe_pdf_text(parsed.get("KEY_FINDING", "No key finding reported.")))
+    pdf.ln(5)
+
+    section_title("2. RECOMMENDED MITIGATION STRATEGY")
+    pdf.set_x(left)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(52, 56, 64)
+    pdf.multi_cell(page_w, 5.5, safe_pdf_text(parsed.get("RECOMMENDED_ACTION", "No action reported.")))
+    pdf.ln(5)
+
+    if macro_text:
+        section_title("3. MACRO REPOSITORY CONTEXT")
+        pdf.set_x(left)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(52, 56, 64)
+        pdf.multi_cell(page_w, 5.5, safe_pdf_text(macro_text))
+        pdf.ln(5)
+
+    meth = _pdf_methodology_text(metrics or {})
+    if meth:
+        section_title("4. METHODOLOGY & METRIC DEFINITIONS")
+        pdf.set_x(left)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(62, 66, 74)
+        pdf.multi_cell(page_w, 4.8, safe_pdf_text(meth))
+        pdf.ln(4)
+
+    pdf.ln(8)
     pdf.set_draw_color(200, 200, 200)
     pdf.set_line_width(0.5)
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
@@ -272,10 +486,12 @@ def generate_pdf_report(parsed: dict, macro_text: str, output_path: str):
     return output_path
 
 def build_whatsapp_intro() -> str:
+    org = os.getenv("TARGET_ORG_NAME", "").strip()
+    subject = f"{org}'s repository" if org else "the analyzed repository"
     return (
         "SOLARIS X: ANALYSIS COMPLETE\n"
         "----------------------------------------\n"
-        "The Technical Due Diligence report regarding AcquiCo's repository resilience and key-person risk has been generated.\n\n"
+        f"The Technical Due Diligence report regarding {subject} resilience and key-person risk has been generated.\n\n"
         "Please review the attached confidential PDF document."
     )
 
@@ -371,9 +587,36 @@ async def run_orchestration():
             tool_call("Custom Analysis", "analyze_bus_factor", f"commit_log=[{len(micro_commits)} chars] | mode=micro")
             analysis_result, elapsed = await timed_tool_call(ct_sess, "Custom Analysis", "analyze_bus_factor", {"commit_log": micro_commits, "mode": "micro"}, tool_log)
 
-            analysis_text = analysis_result.content[0].text if analysis_result and analysis_result.content else "RISK_LEVEL: HIGH\nKEY_FINDING: DEV_01 owns 75% of commits.\nAT_RISK_PERSON: DEV_01\nRECOMMENDED_ACTION: Immediate retention package.\nBUS_FACTOR_SCORE: 9"
-            parsed = parse_bus_factor_result(analysis_text)
-            tool_result(analysis_text, elapsed)
+            graph_for_pdf = _build_commit_graph_for_pdf(micro_commits)
+            file_parsed = pdf_fields_from_graph(graph_for_pdf)
+            analysis_text = (
+                analysis_result.content[0].text
+                if analysis_result and analysis_result.content
+                else ""
+            )
+            if analysis_text.strip() and not analysis_text.strip().upper().startswith("ERROR"):
+                llm_parsed = parse_bus_factor_result(analysis_text)
+                parsed = {**file_parsed}
+                for key in ("KEY_FINDING", "RECOMMENDED_ACTION"):
+                    v = llm_parsed.get(key)
+                    if v:
+                        parsed[key] = v
+                for key in ("AT_RISK_PERSON", "BUS_FACTOR_SCORE", "RISK_LEVEL"):
+                    parsed[key] = file_parsed[key]
+            else:
+                parsed = file_parsed
+
+            tool_result(
+                analysis_text if analysis_text.strip() else "(LLM unavailable; PDF from log statistics)",
+                elapsed,
+            )
+            gm = graph_for_pdf.get("metrics") or {}
+            print(
+                f"  {DIM}  {GREEN}AT_RISK_PERSON:{RESET} {WHITE}{parsed.get('AT_RISK_PERSON')}{RESET}  "
+                f"{DIM}·{RESET}  {GREEN}BUS_FACTOR_SCORE:{RESET} {WHITE}{parsed.get('BUS_FACTOR_SCORE')}{RESET}  "
+                f"{DIM}·{RESET}  {GREEN}BREADTH_90PCT:{RESET} {WHITE}{gm.get('contributors_90pct')}{RESET} "
+                f"{DIM}(from uploaded log){RESET}"
+            )
 
             dev_name = parsed.get("AT_RISK_PERSON", "DEV_01")
             risk_lvl = parsed.get("RISK_LEVEL", "HIGH")
@@ -401,7 +644,15 @@ async def run_orchestration():
             # 1. Generate the PDF into the SHARED Docker store folder
             pdf_filename = f"SolarisX_DueDiligence_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
             host_pdf_path = str(whatsapp_store_dir / pdf_filename)
-            generate_pdf_report(parsed, macro_text, host_pdf_path)
+            pdf_macro_body = macro_context_from_uploaded_log(micro_commits) or macro_text
+            org_display = os.getenv("TARGET_ORG_NAME", "").strip() or "Not specified"
+            generate_pdf_report(
+                parsed,
+                pdf_macro_body,
+                host_pdf_path,
+                org_display=org_display,
+                metrics=graph_for_pdf.get("metrics") or {},
+            )
             print(f"  {DIM}  PDF written to shared volume: {host_pdf_path}{RESET}")
 
             # 2. Send Intro Message

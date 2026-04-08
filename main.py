@@ -31,86 +31,142 @@ from mcp.client.stdio import stdio_client
 
 load_dotenv()
 
+
+def _configure_stdio() -> None:
+    """Windows defaults to cp1252; UTF-8 avoids UnicodeEncodeError on box-drawing and icons."""
+    import io
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            for std_handle in (-11, -12):  # stdout, stderr
+                h = kernel32.GetStdHandle(std_handle)
+                mode = ctypes.c_uint32()
+                if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+                    kernel32.SetConsoleMode(h, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        except Exception:
+            pass
+    for _name in ("stdout", "stderr"):
+        _stream = getattr(sys, _name, None)
+        if _stream is None:
+            continue
+        if isinstance(_stream, io.TextIOWrapper):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                try:
+                    setattr(
+                        sys,
+                        _name,
+                        io.TextIOWrapper(
+                            _stream.buffer,
+                            encoding="utf-8",
+                            errors="replace",
+                            line_buffering=getattr(_stream, "line_buffering", True),
+                        ),
+                    )
+                except Exception:
+                    pass
+
+
+_configure_stdio()
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  TERMINAL DISPLAY ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
 
-CYAN    = "\033[96m"
-GREEN   = "\033[92m"
-YELLOW  = "\033[93m"
-RED     = "\033[91m"
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
 MAGENTA = "\033[95m"
-BLUE    = "\033[94m"
-WHITE   = "\033[97m"
-BOLD    = "\033[1m"
-DIM     = "\033[2m"
-RESET   = "\033[0m"
+BLUE = "\033[94m"
+WHITE = "\033[97m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
 
-WIDTH = 70
+WIDTH = 72
+
+
+def _hline() -> str:
+    return f"{BOLD}{CYAN}{'═' * WIDTH}{RESET}"
+
 
 def banner():
-    print(f"\n{BOLD}{CYAN}{'═'*WIDTH}{RESET}")
-    print(f"{BOLD}{CYAN}  ███████╗ ██████╗ ██╗      █████╗ ██████╗ ██╗███████╗    ██╗  ██╗{RESET}")
-    print(f"{BOLD}{CYAN}  ██╔════╝██╔═══██╗██║     ██╔══██╗██╔══██╗██║██╔════╝    ╚██╗██╔╝{RESET}")
-    print(f"{BOLD}{CYAN}  ███████╗██║   ██║██║     ███████║██████╔╝██║███████╗     ╚███╔╝ {RESET}")
-    print(f"{BOLD}{CYAN}  ╚════██║██║   ██║██║     ██╔══██║██╔══██╗██║╚════██║     ██╔██╗ {RESET}")
-    print(f"{BOLD}{CYAN}  ███████║╚██████╔╝███████╗██║  ██║██║  ██║██║███████║    ██╔╝ ██╗{RESET}")
-    print(f"{BOLD}{CYAN}  ╚══════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝    ╚═╝  ╚═╝{RESET}")
-    print(f"{BOLD}{CYAN}{'═'*WIDTH}{RESET}")
-    print(f"{BOLD}{WHITE}  BUS FACTOR SWARM ENGINE  ·  v9.0  ·  Native Document Delivery{RESET}")
-    print(f"{DIM}{WHITE}  Autonomous M&A Due Diligence  ·  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
-    print(f"{BOLD}{CYAN}{'═'*WIDTH}{RESET}\n")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print()
+    print(_hline())
+    print(f"{BOLD}{WHITE}   SOLARIS X{RESET}   {DIM}·{RESET}   {CYAN}Bus factor due diligence swarm{RESET}")
+    print(f"{DIM}   Autonomous M&A risk intelligence  ·  v9.0  ·  PDF + WhatsApp delivery{RESET}")
+    print(f"{GREEN}   session start{RESET}  {DIM}│{RESET}  {ts}")
+    print(_hline())
+    print()
+
 
 def phase_header(num: int, total: int, title: str, server: str):
     bar = "█" * num + "░" * (total - num)
     pct = int(num / total * 100)
-    print(f"\n{BOLD}{MAGENTA}┌{'─'*(WIDTH-2)}┐{RESET}")
-    print(f"{BOLD}{MAGENTA}│  PHASE {num}/{total}  {WHITE}{title:<38}{MAGENTA}  [{pct:>3}%]{RESET}{BOLD}{MAGENTA} │{RESET}")
-    print(f"{BOLD}{MAGENTA}│  {DIM}MCP Server: {CYAN}{server:<52}{RESET}{BOLD}{MAGENTA}│{RESET}")
-    print(f"{BOLD}{MAGENTA}│  {DIM}{CYAN}{bar}{RESET}  {BOLD}{MAGENTA}│{RESET}")
-    print(f"{BOLD}{MAGENTA}└{'─'*(WIDTH-2)}┘{RESET}")
+    print()
+    print(f"  {BOLD}{MAGENTA}╭{RESET} {BOLD}{WHITE}Phase {num}/{total}{RESET}  {CYAN}{title}{RESET}  {DIM}[{pct}%]{RESET}")
+    print(f"  {DIM}  connector{RESET}  {CYAN}{server}{RESET}")
+    print(f"  {MAGENTA}  {bar}{RESET}  {DIM}{pct}%{RESET}")
+
 
 def tool_call(server: str, tool: str, args_preview: str):
-    print(f"  {DIM}┣━{RESET} {YELLOW}TOOL CALL{RESET}  {CYAN}{server}{RESET}{DIM}::{RESET}{WHITE}{tool}{RESET}")
-    print(f"  {DIM}┃  args: {args_preview[:80]}{'…' if len(args_preview) > 80 else ''}{RESET}")
+    tail = args_preview[:80] + (" ..." if len(args_preview) > 80 else "")
+    print(f"  {YELLOW}▸{RESET} {BOLD}{WHITE}{tool}{RESET} {DIM}on{RESET} {CYAN}{server}{RESET}")
+    print(f"  {DIM}  {tail}{RESET}")
+
 
 def tool_result(preview: str, elapsed: float):
     lines = preview.strip().split("\n")
-    print(f"  {DIM}┃{RESET}")
+    print(f"  {DIM}  {BLUE}│{RESET} {WHITE}result{RESET}")
     for line in lines[:6]:
-        print(f"  {DIM}┃  {GREEN}{line}{RESET}")
+        print(f"  {DIM}  {BLUE}│{RESET} {GREEN}{line}{RESET}")
     if len(lines) > 6:
-        print(f"  {DIM}┃  {DIM}… +{len(lines)-6} more lines{RESET}")
-    print(f"  {DIM}┗━{RESET} {GREEN}✓ returned in {elapsed:.2f}s{RESET}")
+        print(f"  {DIM}  {BLUE}│{RESET} {DIM}(+{len(lines) - 6} more lines){RESET}")
+    print(f"  {GREEN}  ok{RESET} {DIM}·{RESET} {elapsed:.2f}s")
+
 
 def thought_block(thought_num: int, total: int, text: str):
-    print(f"\n  {BLUE}┌─ Thought {thought_num}/{total} {'─'*40}┐{RESET}")
+    print(f"\n  {BLUE}  plan {thought_num}/{total}{RESET} {DIM}— sequential reasoning{RESET}")
     words = text.split()
-    line, lines = [], []
+    line, out = [], []
     for w in words:
         line.append(w)
-        if len(" ".join(line)) > 58:
-            lines.append(" ".join(line))
+        if len(" ".join(line)) > 62:
+            out.append(" ".join(line))
             line = []
     if line:
-        lines.append(" ".join(line))
-    for l in lines:
-        print(f"  {BLUE}│{RESET}  {WHITE}{l}{RESET}")
-    print(f"  {BLUE}└{'─'*52}┘{RESET}")
+        out.append(" ".join(line))
+    for ln in out:
+        print(f"  {DIM}  ·{RESET} {WHITE}{ln}{RESET}")
+
 
 def swarm_summary(tool_calls: list, total_time: float):
-    print(f"\n{BOLD}{GREEN}{'═'*WIDTH}{RESET}")
-    print(f"{BOLD}{GREEN}  SWARM EXECUTION COMPLETE — {datetime.now().strftime('%H:%M:%S')}{RESET}")
-    print(f"{BOLD}{GREEN}{'═'*WIDTH}{RESET}")
-    print(f"\n  {WHITE}Tool calls executed:{RESET}")
+    print()
+    print(_hline())
+    print(f"{BOLD}{GREEN}   PIPELINE COMPLETE{RESET}   {DIM}·{RESET}   {datetime.now().strftime('%H:%M:%S')}")
+    print(_hline())
+    print(f"\n  {WHITE}{'server':<24} {'tool':<32} {'time':>8}  {'ok':>4}{RESET}")
+    print(f"  {DIM}{'-' * 72}{RESET}")
     for entry in tool_calls:
         status_color = GREEN if entry["ok"] else RED
-        status = "✓" if entry["ok"] else "✗"
-        print(f"  {status_color}{status}{RESET}  {CYAN}{entry['server']:<22}{RESET} {WHITE}{entry['tool']:<30}{RESET} {DIM}{entry['elapsed']:.2f}s{RESET}")
-    print(f"\n  {BOLD}{WHITE}Total pipeline time: {GREEN}{total_time:.2f}s{RESET}")
-    print(f"  {BOLD}{WHITE}MCP servers used:    {GREEN}5{RESET}")
-    print(f"  {BOLD}{WHITE}Tool calls made:     {GREEN}{len(tool_calls)}{RESET}")
-    print(f"\n{BOLD}{CYAN}{'═'*WIDTH}{RESET}\n")
+        status = "yes" if entry["ok"] else "no"
+        print(
+            f"  {CYAN}{entry['server']:<24}{RESET} {WHITE}{entry['tool']:<32}{RESET} "
+            f"{DIM}{entry['elapsed']:>7.2f}s{RESET}  {status_color}{status:>4}{RESET}"
+        )
+    print()
+    print(f"  {BOLD}{WHITE}wall time{RESET}     {GREEN}{total_time:.2f}s{RESET}")
+    print(f"  {BOLD}{WHITE}MCP servers{RESET}   {GREEN}5{RESET}")
+    print(f"  {BOLD}{WHITE}tool calls{RESET}    {GREEN}{len(tool_calls)}{RESET}")
+    print()
+    print(_hline())
+    print()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PDF GENERATION & FORMATTING (ENTERPRISE GRADE)
@@ -232,7 +288,7 @@ async def timed_tool_call(session, server_name: str, tool_name: str, args: dict,
     except Exception as e:
         ok = False
         result_obj = None
-        print(f"  {RED}  ✗ Tool call failed: {e}{RESET}")
+        print(f"  {RED}  fail{RESET} {DIM}·{RESET} {e}{RESET}")
     elapsed = time.time() - t0
     log.append({"server": server_name, "tool": tool_name, "elapsed": elapsed, "ok": ok})
     return result_obj, elapsed
@@ -262,13 +318,13 @@ async def run_orchestration():
     try:
         micro_commits = micro_path.read_text()
         large_commits = large_path.read_text() if large_path.exists() else micro_commits
-        print(f"  {GREEN}✓{RESET} Micro dataset loaded  {DIM}({len(micro_commits.splitlines())} commits){RESET}")
+        print(f"  {GREEN}  ok{RESET} {DIM}·{RESET} dataset loaded ({len(micro_commits.splitlines())} lines){RESET}")
     except Exception as e:
-        print(f"  {RED}✗ Failed to load data: {e}{RESET}")
+        print(f"  {RED}  fail{RESET} {DIM}·{RESET} could not load data: {e}{RESET}")
         return
 
     target_phone = os.getenv("TARGET_PHONE", "918971542999")
-    print(f"  {GREEN}✓{RESET} Target phone:         {DIM}{target_phone}{RESET}")
+    print(f"  {GREEN}  ok{RESET} {DIM}·{RESET} default target {DIM}{target_phone}{RESET}")
 
     # ── Server configuration ──────────────────────────────────────────────────
     wa_url      = "http://localhost:8081/sse"
@@ -281,7 +337,7 @@ async def run_orchestration():
     mem_params    = StdioServerParameters(command=npx_cmd, args=["-y", "@modelcontextprotocol/server-memory"], env=env)
     fs_params     = StdioServerParameters(command=npx_cmd, args=["-y", "@modelcontextprotocol/server-filesystem", str(evidence_dir)], env=env)
 
-    print(f"\n  {BOLD}{WHITE}Booting 5-server MCP swarm…{RESET}")
+    print(f"\n  {BOLD}{WHITE}Starting 5-server MCP swarm{RESET}")
 
     try:
         async with contextlib.AsyncExitStack() as stack:
@@ -294,7 +350,7 @@ async def run_orchestration():
                 sess = await stack.enter_async_context(ClientSession(r, w))
                 await sess.initialize()
                 tools = (await sess.list_tools()).tools
-                print(f"\r  {GREEN}✓{RESET} {CYAN}{name:<25}{RESET} {DIM}[{transport_type}]{RESET}  {WHITE}{len(tools)} tools{RESET}")
+                print(f"\r  {GREEN}  ok{RESET} {CYAN}{name:<25}{RESET} {DIM}[{transport_type}]{RESET}  {WHITE}{len(tools)} tools{RESET}")
                 return sess, tools
 
             # Connect via SSE
@@ -309,7 +365,7 @@ async def run_orchestration():
             thought_block(1, 1, thought_text)
             tool_call("Sequential Thinking", "sequentialthinking", f"thought #1")
             result, elapsed = await timed_tool_call(sq_sess, "Sequential Thinking", "sequentialthinking", {"thought": thought_text, "thoughtNumber": 1, "totalThoughts": 1, "nextThoughtNeeded": False}, tool_log)
-            print(f"  {DIM}┗━ {GREEN}✓ thought accepted in {elapsed:.2f}s{RESET}")
+            print(f"  {GREEN}  ok{RESET} {DIM}·{RESET} thought completed in {elapsed:.2f}s")
 
             phase_header(3, TOTAL_PHASES, "DEEP BUS FACTOR ANALYSIS", "Custom Analysis MCP + Groq LLM")
             tool_call("Custom Analysis", "analyze_bus_factor", f"commit_log=[{len(micro_commits)} chars] | mode=micro")
@@ -327,7 +383,7 @@ async def run_orchestration():
             await timed_tool_call(mem_sess, "Memory MCP", "create_entities", {
                 "entities": [{"name": dev_name, "entityType": "HighRiskDeveloper", "observations": [f"Risk level: {risk_lvl}"]}]
             }, tool_log)
-            print(f"\n  {DIM}┗━ {GREEN}✓ Node securely written to Graph.{RESET}")
+            print(f"\n  {GREEN}  ok{RESET} {DIM}·{RESET} knowledge graph entity stored")
 
             phase_header(8, TOTAL_PHASES, "MACRO REPORT — CACHE RETRIEVAL", "Custom Analysis MCP")
             macro_text = ""
@@ -338,7 +394,7 @@ async def run_orchestration():
                     macro_text = macro_result.content[0].text
                     tool_result("Macro cache retrieved successfully.", elapsed)
             else:
-                print(f"  {YELLOW}⚠ No macro cache found. Run prerun_cache.py before demo.{RESET}")
+                print(f"  {YELLOW}  warn{RESET} {DIM}·{RESET} no macro cache (optional: run prerun_cache.py){RESET}")
 
             phase_header(9, TOTAL_PHASES, "WHATSAPP REPORT DELIVERY", "WhatsApp Bridge MCP")
 
@@ -376,19 +432,19 @@ async def run_orchestration():
                 response_text = send_result.content[0].text
                 # SMART CHECK: We explicitly look for a False flag to prevent the old "error: None" bug
                 if "'success': False" in response_text or '"success": false' in response_text.lower():
-                    print(f"  {YELLOW}  ⚠ WhatsApp bridge error: {response_text}{RESET}")
+                    print(f"  {YELLOW}  warn{RESET} {DIM}·{RESET} WhatsApp bridge: {response_text}{RESET}")
                     tool_log[-1]["ok"] = False
                 else:
-                    print(f"  {DIM}┗━ {GREEN}✓ PDF successfully delivered to WhatsApp in {elapsed:.2f}s!{RESET}")
+                    print(f"  {GREEN}  ok{RESET} {DIM}·{RESET} PDF delivered via WhatsApp in {elapsed:.2f}s")
             else:
-                print(f"  {YELLOW}  ⚠ WhatsApp bridge file upload failed entirely.{RESET}")
+                print(f"  {YELLOW}  warn{RESET} {DIM}·{RESET} WhatsApp file send returned no body{RESET}")
                 tool_log[-1]["ok"] = False
 
             phase_header(10, TOTAL_PHASES, "PIPELINE COMPLETE", "SOLARIS X ENGINE")
             swarm_summary(tool_log, time.time() - pipeline_start)
 
     except Exception as e:
-        print(f"\n{RED}{BOLD}  ✗ CRITICAL ORCHESTRATION FAILURE{RESET}")
+        print(f"\n{RED}{BOLD}  CRITICAL ORCHESTRATION FAILURE{RESET}")
         print(f"{RED}  {e}{RESET}")
         traceback.print_exc()
 

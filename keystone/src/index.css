@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-abyss text-neutral-200 antialiased;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.glass-panel {
+  @apply rounded-2xl border border-white/10 bg-white/[0.05] shadow-xl backdrop-blur-md;
+}
+
+.terminal-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(99 102 241 / 0.4) transparent;
+}

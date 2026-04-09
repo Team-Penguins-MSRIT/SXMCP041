@@ -1,4 +1,4 @@
-# SXMCP041 - SOLARIS X Bus Factor Swarm
+# SXMCP041 - KEYSTONE
 
 Autonomous multi-MCP due diligence pipeline for detecting Bus Factor risk from commit logs and delivering a professional report to WhatsApp.
 

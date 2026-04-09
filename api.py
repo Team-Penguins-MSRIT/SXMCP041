@@ -12,16 +12,20 @@ import asyncio
 import json
 import os
 import re
-import sys
+import secrets
+import socket
 import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -54,7 +58,7 @@ BRIDGE_URL = os.getenv("WHATSAPP_BRIDGE_URL", "http://127.0.0.1:8180").rstrip("/
 # Bridge uses API_KEY in Docker; allow override for host-only tools
 BRIDGE_API_KEY = os.getenv("WHATSAPP_BRIDGE_API_KEY") or os.getenv("API_KEY", "")
 
-app = FastAPI(title="Solaris X · Keystone API", version="1.0.0")
+app = FastAPI(title="KeyStone API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -305,7 +309,7 @@ def _intro_message() -> str:
     org = os.getenv("TARGET_ORG_NAME", "").strip()
     subject = f"{org}'s repository" if org else "the analyzed repository"
     return (
-        "SOLARIS X: ANALYSIS COMPLETE\n"
+        "KEYSTONE: ANALYSIS COMPLETE\n"
         "----------------------------------------\n"
         f"The Technical Due Diligence report regarding {subject} resilience "
         "and key-person risk has been generated.\n\n"
@@ -563,7 +567,273 @@ async def actuate(body: ActuateBody):
     return {"ok": True, "recipient": recipient, "intro": intro, "file": file_resp}
 
 
+# ── Demo auth, history, GitHub fetch, masking (additive; in-memory only) ─────
+
+DEMO_USERS: dict[str, dict[str, str]] = {
+    "ceo@keystone.ai": {"password": "demo123", "role": "ceo", "name": "Alex Mercer", "org": "KeyStone"},
+    "pm1@keystone.ai": {"password": "demo123", "role": "pm", "name": "Priya Nair", "org": "KeyStone"},
+    "pm2@keystone.ai": {"password": "demo123", "role": "pm", "name": "Rohan Mehta", "org": "KeyStone"},
+    "dev@keystone.ai": {"password": "demo123", "role": "dev", "name": "Dinesh Kumar", "org": "KeyStone"},
+}
+
+SESSION_STORE: dict[str, dict[str, Any]] = {}
+RUN_HISTORY: dict[str, list[dict[str, Any]]] = {}
+MASK_MAPS: dict[str, dict[str, str]] = {}
+
+# Same file main.py reads (matches POST /api/upload)
+COMMIT_FILE_PATH = DATA_MICRO
+
+
+class LoginBody(BaseModel):
+    email: str = ""
+    password: str = ""
+
+
+class HistorySaveBody(BaseModel):
+    repo: str = "Unknown repo"
+    risk_score: int | None = None
+    top_contributor_pct: float | None = None
+    effective_contributors: float | None = None
+    label: str = ""
+
+
+class GitHubFetchBody(BaseModel):
+    repo_url: str = ""
+
+
+def _auth_token(authorization: str | None) -> str:
+    return (authorization or "").replace("Bearer ", "").strip()
+
+
+def _session_user(authorization: str | None) -> dict[str, Any]:
+    token = _auth_token(authorization)
+    user = SESSION_STORE.get(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def _github_author_token(commit: dict[str, Any]) -> str:
+    a = commit.get("author") or {}
+    login = a.get("login")
+    if login:
+        return re.sub(r"[^\w.\-]", "_", str(login))[:80]
+    c = commit.get("commit") or {}
+    author_block = c.get("author") or {}
+    name = author_block.get("name") or "unknown"
+    return re.sub(r"\s+", "_", str(name).strip())[:80] or "unknown"
+
+
+def _format_github_commit_line(commit: dict[str, Any]) -> str | None:
+    c = commit.get("commit") or {}
+    author_block = c.get("author") or {}
+    date_raw = author_block.get("date") or ""
+    date = date_raw[:10] if len(date_raw) >= 10 else "1970-01-01"
+    msg = (c.get("message") or "").split("\n")[0][:240]
+    msg = msg.replace('"', "'").replace("\r", " ")
+    author = _github_author_token(commit)
+    return f'{date} {author} "{msg}"'
+
+
+def mask_commit_file(file_path: Path, session_token: str) -> dict[str, str]:
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail="No commit log file on disk. Upload or fetch first.")
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    lines_out: list[str] = []
+    seen: dict[str, str] = {}
+    dev_i = 0
+
+    for line in content.splitlines():
+        m = _COMMIT_LINE.match(line.strip())
+        if not m:
+            lines_out.append(line)
+            continue
+        date, author, rest = m.group(1), m.group(2).strip(), m.group(3)
+        if re.fullmatch(r"DEV_\d{2}", author):
+            lines_out.append(line)
+            continue
+        if author not in seen:
+            dev_i += 1
+            seen[author] = f"DEV_{dev_i:02d}"
+        alias = seen[author]
+        lines_out.append(f"{date} {alias} {rest}")
+
+    new_content = "\n".join(lines_out)
+    if new_content != content:
+        file_path.write_text(new_content, encoding="utf-8")
+
+    key = session_token if session_token else "anonymous"
+    MASK_MAPS[key] = seen
+    return seen
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginBody):
+    email = body.email.lower().strip()
+    password = body.password
+    user = DEMO_USERS.get(email)
+    if not user or user["password"] != password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = secrets.token_hex(32)
+    SESSION_STORE[token] = {
+        "email": email,
+        "role": user["role"],
+        "name": user["name"],
+        "org": user["org"],
+    }
+    return {
+        "token": token,
+        "email": email,
+        "role": user["role"],
+        "name": user["name"],
+        "org": user["org"],
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(authorization: str | None = Header(None)):
+    token = _auth_token(authorization)
+    SESSION_STORE.pop(token, None)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def auth_me(authorization: str | None = Header(None)):
+    token = _auth_token(authorization)
+    user = SESSION_STORE.get(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+@app.post("/api/history/save")
+async def history_save(body: HistorySaveBody, authorization: str | None = Header(None)):
+    user = _session_user(authorization)
+    email = user["email"]
+    if email not in RUN_HISTORY:
+        RUN_HISTORY[email] = []
+    RUN_HISTORY[email].append(
+        {
+            "timestamp": int(time.time()),
+            "repo": body.repo,
+            "risk_score": body.risk_score,
+            "top_contributor_pct": body.top_contributor_pct,
+            "effective_contributors": body.effective_contributors,
+            "label": body.label,
+        }
+    )
+    return {"ok": True}
+
+
+@app.get("/api/history")
+async def history_list(authorization: str | None = Header(None)):
+    user = _session_user(authorization)
+    return RUN_HISTORY.get(user["email"], [])
+
+
+@app.post("/api/github/fetch")
+async def github_fetch_commits(
+    body: GitHubFetchBody,
+    _authorization: str | None = Header(None, alias="Authorization"),
+):
+    repo_url = body.repo_url.strip().rstrip("/")
+    parts = (
+        repo_url.replace("https://github.com/", "")
+        .replace("http://github.com/", "")
+        .split("/")
+    )
+    if len(parts) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid GitHub repo URL. Format: https://github.com/owner/repo",
+        )
+    owner, repo = parts[0], parts[1].replace(".git", "")
+
+    gh_headers: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
+    tok = os.getenv("GITHUB_TOKEN", "").strip()
+    if tok:
+        gh_headers["Authorization"] = f"Bearer {tok}"
+
+    all_commits: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        for page in range(1, 4):
+            resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits",
+                params={"per_page": 100, "page": page},
+                headers=gh_headers,
+            )
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"GitHub repo not found: {owner}/{repo}")
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                break
+            all_commits.extend(data)
+
+    if not all_commits:
+        raise HTTPException(
+            status_code=400,
+            detail="No commits found (private repo or empty — set GITHUB_TOKEN for private access).",
+        )
+
+    out_lines = [
+        f"# source github {owner}/{repo}",
+        f"# commits {len(all_commits)}",
+        "",
+    ]
+    for commit in all_commits:
+        line = _format_github_commit_line(commit)
+        if line:
+            out_lines.append(line)
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    COMMIT_FILE_PATH.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+    return {
+        "ok": True,
+        "repo": f"{owner}/{repo}",
+        "commit_count": len(all_commits),
+        "repo_name": repo,
+    }
+
+
+@app.post("/api/mask")
+async def apply_mask(authorization: str | None = Header(None)):
+    token = _auth_token(authorization)
+    mask_commit_file(COMMIT_FILE_PATH, token)
+    m = MASK_MAPS.get(token if token else "anonymous", {})
+    return {"ok": True, "masked_count": len(m), "aliases": list(m.values())}
+
+
+@app.get("/api/mask/map")
+async def get_mask_map(authorization: str | None = Header(None)):
+    user = _session_user(authorization)
+    if user.get("role") != "ceo":
+        raise HTTPException(status_code=403, detail="CEO role required for identity map")
+    token = _auth_token(authorization)
+    return MASK_MAPS.get(token, {})
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("api:app", host="127.0.0.1", port=8765, reload=False)
+    def _find_free_port(host: str, preferred: int, max_tries: int = 25) -> int:
+        # Probe a small range to avoid startup failure when the default port is in use.
+        for port in range(preferred, preferred + max_tries):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind((host, port))
+                except OSError:
+                    continue
+                return port
+        raise RuntimeError(f"No free port found in range {preferred}-{preferred + max_tries - 1}")
+
+    host = os.getenv("API_HOST", "127.0.0.1")
+    preferred_port = int(os.getenv("API_PORT", "8765"))
+    port = _find_free_port(host, preferred_port)
+    if port != preferred_port:
+        print(f"[api] Port {preferred_port} in use. Falling back to {port}.")
+
+    uvicorn.run("api:app", host=host, port=port, reload=False)
